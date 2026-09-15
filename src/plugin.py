@@ -108,19 +108,13 @@ _logged_prebuffer_override = {}  # channel_id -> last-logged chunk value, to avo
                                   # spamming INFO logs on every 0.5s poll while buffering
 
 
-def _get_plugin_state():
-    """Return {'enabled': bool, 'settings': dict} for this plugin, cached briefly.
-
-    We read straight from PluginConfig instead of relying on whatever the
-    Plugin instance was constructed with, because settings changes made in
-    the UI only reach a Plugin instance via run()/stop() — there's no live
-    push into background code like this.
-    """
+def _get_plugin_state(force_refresh=False):
     now = time.time()
-    with _settings_lock:
-        cached = _settings_cache["data"]
-        if cached is not None and (now - _settings_cache["ts"]) < _SETTINGS_CACHE_TTL:
-            return cached
+    if not force_refresh:
+        with _settings_lock:
+            cached = _settings_cache["data"]
+            if cached is not None and (now - _settings_cache["ts"]) < _SETTINGS_CACHE_TTL:
+                return cached
     try:
         cfg = PluginConfig.objects.get(key=PLUGIN_KEY)
         data = {"enabled": bool(cfg.enabled), "settings": dict(cfg.settings or {})}
@@ -357,7 +351,7 @@ class Plugin:
         default_chunk_size_kb = TSConfig.BUFFER_CHUNK_SIZE // 1024
         default_prebuffer_kb = default_max * default_chunk_size_kb
 
-        state = _get_plugin_state()
+        state = _get_plugin_state(force_refresh=True)
         try:
             slot_count = int(state["settings"].get("filter_slot_count", DEFAULT_FILTER_SLOTS))
         except (TypeError, ValueError):
@@ -472,7 +466,7 @@ class Plugin:
 
     def _diagnostic_report(self):
         patched = getattr(ConfigHelper, _PATCH_FLAG, False)
-        state = _get_plugin_state()
+        state = _get_plugin_state(force_refresh=True)
         settings = state["settings"]
         configured_ids = sorted(_configured_group_ids(settings))
 
