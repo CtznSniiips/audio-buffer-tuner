@@ -1,0 +1,58 @@
+{
+  "name": "Audio Buffer Tuner",
+  "version": "0.3.2",
+  "description": "Lowers the initial TS-proxy prebuffer chunk count, and optionally the chunk size itself, for channels in a handful of chosen Channel Groups. Intended for steady, low-bitrate audio-only streams \u2014 leave video groups unselected, since they benefit more from the default safety margin.",
+  "author": "CtznSniiips",
+  "license": "MIT",
+  "help_url": "",
+  "min_dispatcharr_version": "v0.31.0",
+  "fields": [
+    {
+      "id": "prebuffer_chunks",
+      "label": "Prebuffer chunks for matching groups",
+      "type": "number",
+      "min": 1,
+      "max": 4,
+      "step": 1,
+      "default": 2,
+      "help_text": "Each chunk is ~256KB. Dispatcharr's normal default is 4 chunks (~1024KB) before a channel goes active. Lower values start faster but leave less margin against provider hiccups \u2014 fine for steady low-bitrate audio, riskier for video. (Shown here as a static default before the plugin is enabled; once enabled this range follows Dispatcharr's actual configured default.)"
+    },
+    {
+      "id": "chunk_size_kb",
+      "label": "Chunk size for matching groups (KB)",
+      "type": "number",
+      "min": 16,
+      "max": 256,
+      "step": 16,
+      "default": 128,
+      "help_text": "Dispatcharr's normal chunk size is ~256KB. Smaller chunks mean less data has to accumulate before the first chunk (and each subsequent one) is ready, on top of whatever the prebuffer-chunk-count setting saves. Going very low increases Redis write frequency \u2014 usually fine for one or two audio channels, but don't push it to the floor across dozens of channels. Only applies to buffers created after you save this \u2014 already-running channels keep their current chunk size until they restart."
+    },
+    {
+      "id": "filter_slot_count",
+      "label": "Number of group filters",
+      "type": "number",
+      "min": 1,
+      "max": 20,
+      "step": 1,
+      "default": 3,
+      "help_text": "How many group-picker dropdowns to show below. Increase this, save, then reload the Dispatcharr page to see the extra dropdowns."
+    },
+    {
+      "id": "info_no_groups",
+      "type": "info",
+      "label": "Group-picker dropdowns (one per filter slot, listing only Channel Groups that actually contain channels) appear here once the plugin is enabled and it can read them from the database."
+    }
+  ],
+  "actions": [
+    {
+      "id": "refresh_groups",
+      "label": "Refresh channel group options",
+      "description": "Re-scan Channel Groups so newly added/renamed groups are available to pick. Reload the Dispatcharr page afterward to see the change \u2014 the settings panel only loads field definitions once per page load."
+    },
+    {
+      "id": "diagnose",
+      "label": "Show current status",
+      "description": "Reports whether the override is actually active in this process, current settings, and which Channel Groups exist \u2014 use this instead of digging through logs."
+    }
+  ]
+}
