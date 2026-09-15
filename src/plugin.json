@@ -1,7 +1,7 @@
 {
   "name": "Audio Buffer Tuner",
   "version": "0.3.2",
-  "description": "Lowers the initial TS-proxy prebuffer chunk count, and optionally the chunk size itself, for channels in a handful of chosen Channel Groups. Intended for steady, low-bitrate audio-only streams \u2014 leave video groups unselected, since they benefit more from the default safety margin.",
+  "description": "Lowers the initial TS-proxy prebuffer chunk count, and optionally the chunk size itself, for channels in a handful of chosen Channel Groups. Intended for steady, low-bitrate audio-only streams. Leave video groups unselected, since they benefit more from the default safety margin.",
   "author": "CtznSniiips",
   "license": "MIT",
   "help_url": "",
