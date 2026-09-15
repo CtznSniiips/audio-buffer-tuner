@@ -34,7 +34,7 @@
       "min": 1,
       "max": 20,
       "step": 1,
-      "default": 3,
+      "default": 1,
       "help_text": "How many group-picker dropdowns to show below. Increase this, save, then reload the Dispatcharr page to see the extra dropdowns."
     },
     {
