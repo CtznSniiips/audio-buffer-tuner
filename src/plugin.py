@@ -320,10 +320,10 @@ class Plugin:
         "Lowers the initial TS-proxy prebuffer chunk count, and optionally "
         "the chunk size itself, for channels in a handful of chosen "
         "Channel Groups. Intended for steady, low-bitrate audio-only "
-        "streams — leave video groups unselected, since they benefit more "
+        "streams. Leave video groups unselected, since they benefit more "
         "from the default safety margin."
     )
-    author = "Steve"
+    author = "CtznSniiips"
 
     def __init__(self):
         self.fields = self._build_fields()
