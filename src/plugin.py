@@ -302,6 +302,8 @@ def _remove_patch():
     setattr(ConfigHelper, _PATCH_FLAG, False)
     logger.info("audio_buffer_tuner: restored original ConfigHelper.initial_behind_chunks and StreamBuffer.__init__")
 
+class Plugin:
+  
     def __init__(self):
         self.fields = self._build_fields()
         self.actions = [
