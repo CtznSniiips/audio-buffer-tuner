@@ -1,0 +1,64 @@
+name: Release plugin
+
+# Trigger by pushing a tag like v0.3.2 — the leading "v" is stripped and
+# checked against plugin.json's own "version" field before anything is built,
+# so a mismatched tag fails loudly instead of publishing a mislabeled zip.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  PLUGIN_SLUG: audio-buffer-tuner
+  SRC_DIR: src
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          tag="${GITHUB_REF_NAME}"          # e.g. v0.3.2
+          version="${tag#v}"                # e.g. 0.3.2
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate plugin.json version matches the tag
+        run: |
+          json_version=$(jq -r '.version' "${SRC_DIR}/plugin.json")
+          if [ "$json_version" != "${{ steps.ver.outputs.version }}" ]; then
+            echo "::error::plugin.json version ($json_version) does not match tag (${{ steps.ver.outputs.version }})"
+            exit 1
+          fi
+
+      - name: Validate plugin.json is well-formed JSON
+        run: jq empty "${SRC_DIR}/plugin.json"
+
+      - name: Build the release zip
+        id: build
+        run: |
+          zip_name="${PLUGIN_SLUG}.zip"
+          (cd "$SRC_DIR" && zip -r "../$zip_name" . -q)
+          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$zip_name" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          echo "md5=$(md5sum "$zip_name" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          ls -la "$zip_name"
+          echo "--- zip contents (should be flat, no leading folder) ---"
+          unzip -l "$zip_name"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          files: ${{ steps.build.outputs.zip_name }}
+          body: |
+            **SHA256:** `${{ steps.build.outputs.sha256 }}`
+            **MD5:** `${{ steps.build.outputs.md5 }}`
+
+            Install via the Dispatcharr Plugins marketplace, or manually by
+            extracting into `/data/plugins/`.
