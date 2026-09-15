@@ -302,19 +302,6 @@ def _remove_patch():
     setattr(ConfigHelper, _PATCH_FLAG, False)
     logger.info("audio_buffer_tuner: restored original ConfigHelper.initial_behind_chunks and StreamBuffer.__init__")
 
-
-class Plugin:
-    name = "Audio Buffer Tuner"
-    version = "0.3.2"
-    description = (
-        "Lowers the initial TS-proxy prebuffer chunk count, and optionally "
-        "the chunk size itself, for channels in a handful of chosen "
-        "Channel Groups. Intended for steady, low-bitrate audio-only "
-        "streams. Leave video groups unselected, since they benefit more "
-        "from the default safety margin."
-    )
-    author = "CtznSniiips"
-
     def __init__(self):
         self.fields = self._build_fields()
         self.actions = [
