@@ -67,11 +67,7 @@ from apps.plugins.models import PluginConfig
 
 logger = logging.getLogger(__name__)
 
-# Must match this plugin's folder name (Dispatcharr derives the plugin key
-# from the folder name: spaces -> underscores, lowercased — hyphens are left
-# as-is, so a kebab-case folder like "audio-buffer-tuner" keeps its hyphens
-# in the derived key).
-PLUGIN_KEY = "audio-buffer-tuner"
+PLUGIN_KEY = "audio_buffer_tuner"
 
 _PATCH_FLAG = "_audio_buffer_tuner_patched"
 
