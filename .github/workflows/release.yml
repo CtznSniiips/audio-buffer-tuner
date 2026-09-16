@@ -8,6 +8,10 @@ on:
     tags:
       - "v*.*.*"
 
+# Default GITHUB_TOKEN permissions are read-only on repos created after
+# GitHub's 2023 default change. softprops/action-gh-release needs write
+# access to create/update releases, or it fails with exactly the
+# "Resource not accessible by integration" error this workflow hit.
 permissions:
   contents: write
 
@@ -41,10 +45,59 @@ jobs:
       - name: Validate plugin.json is well-formed JSON
         run: jq empty "${SRC_DIR}/plugin.json"
 
+      - name: Extract changelog section for this version
+        id: changelog
+        run: |
+          python3 - "${{ steps.ver.outputs.version }}" << 'PYEOF'
+          import re
+          import sys
+
+          version = sys.argv[1]
+          with open("CHANGELOG.md") as f:
+              lines = f.readlines()
+
+          pattern = re.compile(r"^## \[" + re.escape(version) + r"\]")
+          start = next((i for i, l in enumerate(lines) if pattern.match(l)), None)
+          if start is None:
+              print(
+                  f"::error::No CHANGELOG.md entry found for version {version} "
+                  f"(expected a line like '## [{version}] - YYYY-MM-DD')"
+              )
+              sys.exit(1)
+
+          end = len(lines)
+          for j in range(start + 1, len(lines)):
+              if lines[j].startswith("## ["):
+                  end = j
+                  break
+
+          section = "".join(lines[start + 1:end]).strip("\n")
+          if not section:
+              print(f"::error::CHANGELOG.md entry for {version} is empty")
+              sys.exit(1)
+
+          with open("changelog_section.md", "w") as f:
+              f.write(section + "\n")
+          print("Extracted section:")
+          print(section)
+          PYEOF
+          {
+            echo "body<<CHANGELOG_EOF"
+            cat changelog_section.md
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build the release zip
         id: build
         run: |
           zip_name="${PLUGIN_SLUG}.zip"
+          # IMPORTANT: contents of src/ go at the ZIP ROOT, not wrapped in a
+          # "src/" folder. Dispatcharr's installer (_install_plugin_from_zip)
+          # walks the archive for the shallowest plugin.py; if it's found at
+          # the root, the plugin's key is derived from THIS ZIP'S FILENAME
+          # (sanitized: spaces/hyphens -> underscores), not a folder name.
+          # A "src/" wrapper folder would make the key become "src" instead
+          # of "audio_buffer_tuner" — so this has to stay flat.
           (cd "$SRC_DIR" && zip -r "../$zip_name" . -q)
           echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$zip_name" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -60,6 +113,9 @@ jobs:
           name: ${{ steps.ver.outputs.tag }}
           files: ${{ steps.build.outputs.zip_name }}
           body: |
+            ${{ steps.changelog.outputs.body }}
+
+            ---
             **SHA256:** `${{ steps.build.outputs.sha256 }}`
             **MD5:** `${{ steps.build.outputs.md5 }}`
 
