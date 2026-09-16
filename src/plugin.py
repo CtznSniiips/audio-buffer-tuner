@@ -45,7 +45,7 @@ instantiated (i.e. when the plugin is enabled, or Dispatcharr restarts).
 Dispatcharr's frontend only fetches the plugin field list once per page
 load, so after changing "Number of group filters" or adding new Channel
 Groups, reload the Dispatcharr page (or toggle this plugin off and back on)
-to see the update — running the "Refresh channel group options" action
+to see the update — running the "Refresh group filters" action
 alone updates the backend's field list but won't retroactively refresh
 what's already rendered in your browser tab.
 
@@ -67,6 +67,18 @@ from apps.plugins.models import PluginConfig
 
 logger = logging.getLogger(__name__)
 
+# This must match the plugin key Dispatcharr actually assigns at runtime —
+# NOT necessarily this repo's folder name. Two different code paths derive
+# the key differently:
+#   - Manual folder drop into /data/plugins/<name>/ (apps/plugins/loader.py):
+#     only replaces spaces, so hyphens survive.
+#   - Installed via the marketplace / "install from managed repo" flow
+#     (apps/plugins/api_views.py:_sanitize_plugin_key, used by
+#     PluginInstallFromRepoAPIView — the realistic path for almost every
+#     real user): replaces BOTH spaces and hyphens with underscores.
+# Since the marketplace path is how this plugin will actually be installed
+# by anyone who isn't hand-copying files, the key is underscored regardless
+# of whether the repo/zip uses hyphens anywhere.
 PLUGIN_KEY = "audio_buffer_tuner"
 
 _PATCH_FLAG = "_audio_buffer_tuner_patched"
@@ -105,6 +117,19 @@ _logged_prebuffer_override = {}  # channel_id -> last-logged chunk value, to avo
 
 
 def _get_plugin_state(force_refresh=False):
+    """Return {'enabled': bool, 'settings': dict} for this plugin, cached briefly.
+
+    We read straight from PluginConfig instead of relying on whatever the
+    Plugin instance was constructed with, because settings changes made in
+    the UI only reach a Plugin instance via run()/stop() — there's no live
+    push into background code like this.
+
+    force_refresh bypasses the cache entirely. Used by explicit, rare,
+    user-initiated calls (the refresh action, the diagnostic action) where
+    stale-by-up-to-5-seconds data would be actively misleading. The cache
+    stays in place for the actual hot path — the per-channel override
+    checks — where it exists purely to avoid a DB hit on every 0.5s poll.
+    """
     now = time.time()
     if not force_refresh:
         with _settings_lock:
@@ -302,19 +327,29 @@ def _remove_patch():
     setattr(ConfigHelper, _PATCH_FLAG, False)
     logger.info("audio_buffer_tuner: restored original ConfigHelper.initial_behind_chunks and StreamBuffer.__init__")
 
+
 class Plugin:
-  
+    # name/version/description/author intentionally omitted — Dispatcharr
+    # falls back to plugin.json's values for any of these left unset here
+    # (apps/plugins/loader.py reads each via getattr(instance, attr, default)
+    # and only overrides from the manifest when the class-level value is
+    # falsy), so plugin.json is the single source of truth for this
+    # metadata instead of keeping two copies in sync.
+
     def __init__(self):
         self.fields = self._build_fields()
         self.actions = [
             {
                 "id": "refresh_groups",
-                "label": "Refresh channel group options",
+                "label": "Refresh group filters",
                 "description": (
-                    "Re-scan Channel Groups so newly added/renamed groups "
-                    "are available to pick. Reload the Dispatcharr page "
-                    "afterward to see the change — the settings panel only "
-                    "loads field definitions once per page load."
+                    "Rebuilds the group-picker dropdowns below: picks up "
+                    "newly added/renamed Channel Groups, AND applies any "
+                    "change to \"Number of group filters\" (growing or "
+                    "shrinking the dropdown count). Run this after saving "
+                    "either kind of change, then reload the Dispatcharr "
+                    "page — the settings panel only loads field "
+                    "definitions once per page load."
                 ),
             },
             {
@@ -391,9 +426,11 @@ class Plugin:
                 "step": 1,
                 "default": DEFAULT_FILTER_SLOTS,
                 "help_text": (
-                    "How many group-picker dropdowns to show below. Increase "
-                    "this, save, then reload the Dispatcharr page to see the "
-                    "extra dropdowns."
+                    "How many group-picker dropdowns to show below. After "
+                    "changing this, save, run the \"Refresh group "
+                    "filters\" action (Actions tab), then reload the "
+                    "Dispatcharr page — saving alone does not regenerate "
+                    "the dropdowns."
                 ),
             },
         ]
@@ -430,8 +467,8 @@ class Plugin:
                     "type": "info",
                     "label": (
                         "No Channel Groups with actual channels found yet. "
-                        "Save this plugin, then use \"Refresh channel group "
-                        "options\" (and reload the page) once your channels exist."
+                        "Save this plugin, then use \"Refresh group "
+                        "filters\" (and reload the page) once your channels exist."
                     ),
                 }
             )
@@ -441,10 +478,27 @@ class Plugin:
     def run(self, action_id, params, context):
         if action_id == "refresh_groups":
             self.fields = self._build_fields()
-            return {
-                "status": "ok",
-                "message": "Channel group options refreshed on the backend — reload the Dispatcharr page to see them.",
-            }
+            try:
+                # self.fields alone is cosmetic: Dispatcharr's plugin list
+                # (PluginsListAPIView -> list_plugins()) serves lp.fields —
+                # a snapshot frozen in the registry the last time this
+                # plugin was actually (re)loaded — never re-synced from a
+                # live instance attribute afterward. A plain page reload
+                # only re-fetches that frozen snapshot, so updating
+                # self.fields here changes nothing visible on its own.
+                # Forcing a real re-discovery is what actually regenerates
+                # the registry's copy — the same thing a manual disable/
+                # enable does, without requiring you to do that by hand.
+                from apps.plugins.loader import PluginManager
+                PluginManager.get().discover_plugins(force_reload=True)
+                message = "Group filters rebuilt — reload the Dispatcharr page to see them."
+            except Exception:
+                logger.exception("audio_buffer_tuner: forced re-discovery failed")
+                message = (
+                    "Group filters rebuilt, but the forced reload failed — "
+                    "toggle the plugin off and back on to pick up the change."
+                )
+            return {"status": "ok", "message": message}
         if action_id == "diagnose":
             return {"status": "ok", "file": self._diagnostic_report()}
         return {"status": "ok"}
