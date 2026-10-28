@@ -4,18 +4,16 @@ Reduces the TS-proxy's initial prebuffer for channels in a handful of chosen Cha
 
 ## What it does
 
-- Lowers **how many chunks** must arrive before a channel goes active (`INITIAL_BEHIND_CHUNKS`, default 4), and optionally **how big each chunk is** (`BUFFER_CHUNK_SIZE`, default ~256KB) — for channels in the Channel Groups you pick, and only those.
-- Both settings apply only to channels in the Channel Groups you pick. Only Channel Groups that back a real `Channel` are listed. Groups that exist solely because a `Stream` (e.g. an M3U group-title tag) points at them are left out.
+- Lowers **how many chunks** must arrive before a channel goes active (`INITIAL_BEHIND_CHUNKS`, default 4), and optionally **how big each chunk is** (`BUFFER_CHUNK_SIZE`, default ~256KB) — for channels in the Channel  Groups you pick, and only those.
+- Both settings apply only when a channel's group matches one of a small, fixed number of single-select dropdowns (defaults to 3, adjustable). Only Channel Groups that actually back a real `Channel` are listed. Groups
+  that exist solely because a `Stream` (e.g. an M3U group-title tag) points at them are left out.
 - Video channels, and any channel in a group you haven't selected, are completely untouched. Any errors default back to Dispatcharr's normal defaults.
 
 ## Settings
 
-- **Prebuffer chunks for matching groups** (default 2) and **Chunk size for matching groups (KB)** (default 128KB): together these set the total bytes Dispatcharr waits for before a matching channel goes active. Lower values start faster but leave less margin against provider hiccups. That's fine for a steady low-bitrate audio feed, risky for anything less stable. Note the asymmetry: the chunk-count setting is re-checked live and takes effect immediately, even mid-stream. The chunk-size setting is baked into a channel's buffer at creation time, so it only affects channels that (re)start after you save it.
-- **Channel groups**: how you pick groups depends on your Dispatcharr version:
-  - **v0.34+ / current dev:** a single multiselect, **Apply to these Channel Groups**. If you add a Channel Group later, press **Reload Plugin** at the top of the plugin page to refresh the list.
-  - **v0.31 – v0.33:** a fixed number of single-select dropdowns. Change **Number of group filters**, Save, run **Refresh group filters** from Actions, then reload the page.
-  - Upgrading Dispatcharr keeps your existing dropdown selections. They're pre-selected in the multiselect, and keep working until you save it.
-- **Show current status** (under Actions): reports which Dispatcharr processes have the override installed, the current settings, the groups it applies to, and the last few overrides actually applied to a channel. Check this before digging through logs.
+- **Prebuffer chunks for matching groups** (default 2) and **Chunk size for matching groups (KB)** (default 128KB) — together these set the total bytes Dispatcharr waits for before a matching channel goes active. Lower  values start faster but leave less margin against provider hiccups: fine for a steady low-bitrate audio feed, risky for anything less stable.  Note the asymmetry — the chunk-count setting is re-checked live and takes  effect immediately, even mid-stream; the chunk-size setting is baked into a channel's buffer at creation time, so it only affects channels that (re)start after you save it.
+- **Number of group filters** (default 3) — how many group-picker dropdowns to show. Change your `Number of group filters` setting, then Save. Press the plugin Actions button, then Run `Refresh group filters`. Refresh the page. The settings page will be updated with the set number of group-picker fields.
+- **Show current status** (under Actions) — a diagnostic action that reports whether the override is actually active in this process, the current settings, and every eligible Channel Group. Use this before digging through logs if something doesn't seem to be applying.
 
 ## How it works, and what to know before relying on it
 
@@ -23,7 +21,7 @@ Reduces the TS-proxy's initial prebuffer for channels in a handful of chosen Cha
 - Determining *which* channel is asking for the prebuffer-chunk count relies on a `channel_id` local variable being present in the calling code's stack frame — true as of the Dispatcharr version this was built and tested against, but not a stable API. If a future Dispatcharr release changes that, this plugin simply stops discriminating by channel (falls back to the normal default everywhere) rather than breaking anything.
 - After changing any setting in this plugin, Dispatcharr only picks up the change on the *next* channel start — an already-running channel keeps whatever buffer it was created with.
 
-Built against Dispatcharr v0.31.0; re-verified against the v0.34 dev branch (October 2026).
+Built and verified against Dispatcharr v0.31.0.
 
 ## Benchmarks
 

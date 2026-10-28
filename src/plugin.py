@@ -3,23 +3,22 @@ Audio Buffer Tuner — Dispatcharr plugin
 
 Reduces the TS-proxy initial prebuffer (INITIAL_BEHIND_CHUNKS) *and*
 optionally the per-chunk size (BUFFER_CHUNK_SIZE) for channels whose
-Channel Group is one of the groups picked in this plugin's settings,
-without touching Dispatcharr's own source.
+Channel Group matches one of a small number of dropdown filters, without
+touching Dispatcharr's own source.
 
-Built against Dispatcharr v0.31.0 internals, re-verified against the
-v0.34 dev branch (Oct 2026):
+Built against Dispatcharr v0.31.0 internals:
   - apps.proxy.config.TSConfig.INITIAL_BEHIND_CHUNKS is a plain class
     attribute (default 4, ~256KB/chunk).
   - apps.proxy.live_proxy.config_helper.ConfigHelper.initial_behind_chunks()
-    is a staticmethod that takes no arguments, so it has no idea which
-    channel is asking. Call sites: services/channel_service.py,
-    input/manager.py (x2), output/ts/generator.py — all have either a
-    `channel_id` local or `self.buffer.channel_id` in scope.
+    is a staticmethod that reads it via getattr() and takes no arguments,
+    so it has no idea which channel is asking.
   - apps.proxy.live_proxy.input.buffer.StreamBuffer.__init__ receives
-    channel_id directly as a constructor argument and sets
-    self.target_chunk_size once from BUFFER_CHUNK_SIZE. That value is never
-    re-read after construction, so a chunk-size override only affects
-    buffers created after it's saved.
+    channel_id directly as a constructor argument (and always sets
+    self.channel_id from it, called positionally or by keyword), and sets
+    self.target_chunk_size once from BUFFER_CHUNK_SIZE. Unlike
+    INITIAL_BEHIND_CHUNKS, this value is never re-read after construction,
+    so a chunk-size override only affects buffers created after it's saved
+    — not already-running channels.
   - ChannelGroup is shared between Channel.channel_group (related_name
     "channels") and Stream.channel_group (related_name "streams"), so a
     "group with streams but no channels" is a real thing to filter out.
@@ -28,21 +27,27 @@ Approach: replace both ConfigHelper.initial_behind_chunks and
 StreamBuffer.__init__ with wrappers. The chunks wrapper walks a couple of
 stack frames looking for `channel_id` (or self.buffer.channel_id); the
 buffer wrapper needs no such trick since channel_id is a direct argument.
-Both only override behavior when the channel's group is one of the
-configured groups. Every other channel — and every failure mode — falls
-straight back to Dispatcharr's normal behavior.
+Both look up the channel's group id and only override behavior when that
+id is one of the configured filter dropdowns' values. Every other
+channel — and every failure mode below — falls straight back to
+Dispatcharr's normal behavior:
 
-Settings UI — two modes, picked at runtime:
-  - Dispatcharr builds whose plugin field serializer knows `multiselect`
-    (the "v3" plugin system, v0.34+ / current dev): one multiselect group
-    picker, grouped into collapsible sections. Use the plugin page's own
-    "Reload Plugin" button to pick up newly added Channel Groups.
-  - Older builds (v0.31–v0.33): the original N single-select "group
-    filter" dropdowns, with an adjustable count and a refresh action.
-  Settings saved by the old dropdown mode are still honored in the new
-  mode until the multiselect is saved for the first time (and they're
-  pre-selected in it), so upgrading Dispatcharr doesn't silently drop
-  anyone's group selection.
+  - plugin disabled -> never instantiated, no patch applied at all
+  - no filter dropdown set to a group yet -> untouched
+  - channel_id can't be found in the caller's frames (Dispatcharr changed
+    something upstream) -> untouched
+  - channel's group isn't one of the configured ones -> untouched
+  - any exception anywhere in the lookup -> untouched
+
+UI note: the settings panel's dropdown *options* (available groups) and
+the *number* of dropdowns are both computed once when this Plugin class is
+instantiated (i.e. when the plugin is enabled, or Dispatcharr restarts).
+Dispatcharr's frontend only fetches the plugin field list once per page
+load, so after changing "Number of group filters" or adding new Channel
+Groups, reload the Dispatcharr page (or toggle this plugin off and back on)
+to see the update — running the "Refresh group filters" action
+alone updates the backend's field list but won't retroactively refresh
+what's already rendered in your browser tab.
 
 This is a real monkeypatch of an internal, non-public function. It is
 expected to need re-checking against Dispatcharr's source on major version
@@ -50,11 +55,8 @@ bumps — the frame-walking part in particular relies on internal variable
 names that aren't a stable API.
 """
 
-import os
 import sys
-import json
 import time
-import socket
 import threading
 import logging
 
@@ -65,62 +67,19 @@ from apps.plugins.models import PluginConfig
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Plugin key resolution
-#
-# Dispatcharr's registry key is the install folder name, lowercased with
-# spaces -> "_" (apps/plugins/keys.py:normalize_plugin_key). What that folder
-# is called depends on how the plugin was installed:
-#   - manual drop / ZIP import: whatever the folder is called
-#   - marketplace install on <= v0.33: slug with hyphens -> "_"
-#     ("audio_buffer_tuner")
-#   - marketplace install on the v0.34 dev branch: hyphens are now KEPT
-#     ("audio-buffer-tuner"), unless an older config row already exists
-# So a hardcoded key silently breaks fresh installs on newer builds (the
-# PluginConfig lookup misses, the plugin reads as "disabled", and the
-# override never fires). Derive it from our own folder instead, and fall
-# back to the known spellings.
-# ---------------------------------------------------------------------------
-
-_KNOWN_KEYS = ("audio-buffer-tuner", "audio_buffer_tuner")
-
-
-def _key_from_folder():
-    try:
-        folder = os.path.basename(os.path.dirname(os.path.abspath(__file__)))
-        return folder.replace(" ", "_").lower() or None
-    except Exception:
-        return None
-
-
-_resolved_key = {"value": None}
-_resolved_key_lock = threading.Lock()
-
-
-def _plugin_key():
-    """The PluginConfig.key Dispatcharr is actually using for this install."""
-    with _resolved_key_lock:
-        if _resolved_key["value"]:
-            return _resolved_key["value"]
-    candidates = []
-    for k in (_key_from_folder(),) + _KNOWN_KEYS:
-        if k and k not in candidates:
-            candidates.append(k)
-    found = None
-    try:
-        existing = set(
-            PluginConfig.objects.filter(key__in=candidates).values_list("key", flat=True)
-        )
-        found = next((k for k in candidates if k in existing), None)
-    except Exception:
-        logger.debug("audio_buffer_tuner: plugin key lookup failed", exc_info=True)
-    if found:
-        with _resolved_key_lock:
-            _resolved_key["value"] = found
-        return found
-    # Not cached: the DB may not be ready yet, try again next call.
-    return candidates[0]
-
+# This must match the plugin key Dispatcharr actually assigns at runtime —
+# NOT necessarily this repo's folder name. Two different code paths derive
+# the key differently:
+#   - Manual folder drop into /data/plugins/<name>/ (apps/plugins/loader.py):
+#     only replaces spaces, so hyphens survive.
+#   - Installed via the marketplace / "install from managed repo" flow
+#     (apps/plugins/api_views.py:_sanitize_plugin_key, used by
+#     PluginInstallFromRepoAPIView — the realistic path for almost every
+#     real user): replaces BOTH spaces and hyphens with underscores.
+# Since the marketplace path is how this plugin will actually be installed
+# by anyone who isn't hand-copying files, the key is underscored regardless
+# of whether the repo/zip uses hyphens anywhere.
+PLUGIN_KEY = "audio_buffer_tuner"
 
 _PATCH_FLAG = "_audio_buffer_tuner_patched"
 
@@ -133,24 +92,11 @@ DEFAULT_CHUNK_KB = 128
 
 DEFAULT_PREBUFFER_CHUNKS = 2
 
-GROUP_IDS_FIELD = "group_ids"  # multiselect (v3 settings UI)
-
-NONE_OPTION_VALUE = "none"  # "— none —" sentinel stored in a legacy filter slot
+NONE_OPTION_VALUE = "none"  # "— none —" sentinel stored in a filter slot
 # NOTE: must be non-blank — Dispatcharr's PluginFieldOptionSerializer.value
 # is a plain CharField (allow_blank=False by default), so an option with
 # value="" fails validation and silently drops the *entire* options list
 # (and therefore the whole select field) with only a backend log warning.
-
-# Redis keys for cross-process diagnostics. Plugin actions now run on a
-# Celery worker (v0.34+), not in the uWSGI process that serves streams, so
-# "is the patch installed in THIS process" no longer tells you anything
-# useful from inside an action. Each patched process registers itself here,
-# and every applied override is logged, so the status action can report
-# what's happening where streams actually run.
-_REDIS_PROCS_KEY = "plugin:audio_buffer_tuner:patched_procs"
-_REDIS_EVENTS_KEY = "plugin:audio_buffer_tuner:recent_overrides"
-_REDIS_EVENTS_MAX = 25
-_REDIS_TTL = 7 * 24 * 3600
 
 # Keep real references to Dispatcharr's original implementations so we can
 # always fall back to them, and so stop() can restore them cleanly.
@@ -170,96 +116,6 @@ _logged_prebuffer_override = {}  # channel_id -> last-logged chunk value, to avo
                                   # spamming INFO logs on every 0.5s poll while buffering
 
 
-# ---------------------------------------------------------------------------
-# Feature detection
-# ---------------------------------------------------------------------------
-
-def _supports_v3_fields():
-    """True when this Dispatcharr build's plugin settings UI understands
-    `multiselect` (and `section`). Older builds' field serializer rejects
-    unknown types, which would silently drop the field entirely."""
-    try:
-        from apps.plugins.serializers import PluginFieldSerializer
-        choices = PluginFieldSerializer().fields["type"].choices
-        return "multiselect" in choices and "section" in choices
-    except Exception:
-        return False
-
-
-# ---------------------------------------------------------------------------
-# Redis-backed diagnostics (best effort, never raises)
-# ---------------------------------------------------------------------------
-
-def _redis():
-    try:
-        from core.utils import RedisClient
-        return RedisClient.get_client(max_retries=1, retry_interval=0)
-    except Exception:
-        return None
-
-
-def _process_id():
-    return f"{socket.gethostname()}:{os.getpid()}"
-
-
-def _process_role():
-    argv = " ".join(sys.argv).lower()
-    if "celery" in argv:
-        return "celery"
-    if "uwsgi" in argv or "uwsgi" in sys.modules:
-        return "uwsgi"
-    if "daphne" in argv:
-        return "daphne"
-    return os.path.basename(sys.argv[0]) if sys.argv and sys.argv[0] else "unknown"
-
-
-def _register_process(patched):
-    r = _redis()
-    if r is None:
-        return
-    try:
-        if patched:
-            r.hset(
-                _REDIS_PROCS_KEY,
-                _process_id(),
-                json.dumps({"role": _process_role(), "since": int(time.time())}),
-            )
-            r.expire(_REDIS_PROCS_KEY, _REDIS_TTL)
-        else:
-            r.hdel(_REDIS_PROCS_KEY, _process_id())
-    except Exception:
-        logger.debug("audio_buffer_tuner: process registry update failed", exc_info=True)
-
-
-def _record_override(kind, channel_id, group_id, value, default):
-    r = _redis()
-    if r is None:
-        return
-    try:
-        r.lpush(
-            _REDIS_EVENTS_KEY,
-            json.dumps(
-                {
-                    "ts": int(time.time()),
-                    "kind": kind,
-                    "channel": str(channel_id),
-                    "group": group_id,
-                    "value": value,
-                    "default": default,
-                    "proc": _process_id(),
-                }
-            ),
-        )
-        r.ltrim(_REDIS_EVENTS_KEY, 0, _REDIS_EVENTS_MAX - 1)
-        r.expire(_REDIS_EVENTS_KEY, _REDIS_TTL)
-    except Exception:
-        logger.debug("audio_buffer_tuner: override log write failed", exc_info=True)
-
-
-# ---------------------------------------------------------------------------
-# Settings / lookups
-# ---------------------------------------------------------------------------
-
 def _get_plugin_state(force_refresh=False):
     """Return {'enabled': bool, 'settings': dict} for this plugin, cached briefly.
 
@@ -269,10 +125,10 @@ def _get_plugin_state(force_refresh=False):
     push into background code like this.
 
     force_refresh bypasses the cache entirely. Used by explicit, rare,
-    user-initiated calls where stale-by-up-to-5-seconds data would be
-    actively misleading. The cache stays in place for the hot path — the
-    per-channel override checks — where it exists purely to avoid a DB hit
-    on every 0.5s poll.
+    user-initiated calls (the refresh action, the diagnostic action) where
+    stale-by-up-to-5-seconds data would be actively misleading. The cache
+    stays in place for the actual hot path — the per-channel override
+    checks — where it exists purely to avoid a DB hit on every 0.5s poll.
     """
     now = time.time()
     if not force_refresh:
@@ -281,7 +137,7 @@ def _get_plugin_state(force_refresh=False):
             if cached is not None and (now - _settings_cache["ts"]) < _SETTINGS_CACHE_TTL:
                 return cached
     try:
-        cfg = PluginConfig.objects.get(key=_plugin_key())
+        cfg = PluginConfig.objects.get(key=PLUGIN_KEY)
         data = {"enabled": bool(cfg.enabled), "settings": dict(cfg.settings or {})}
     except Exception:
         data = {"enabled": False, "settings": {}}
@@ -303,8 +159,9 @@ def _channel_group_id(channel_id):
     """Look up a channel's group id, cached briefly, defensive on failure.
 
     NOTE: channel_id here is Channel.uuid, not the integer Channel.id primary
-    key — every live_proxy call site passes the uuid around, so the lookup
-    must filter on that field, not `id`.
+    key — every live_proxy call site (services/channel_service.py,
+    input/manager.py, live_proxy/url_utils.py) passes the uuid around, so
+    the lookup must filter on that field, not `id`.
     """
     now = time.time()
     with _group_lookup_lock:
@@ -326,8 +183,8 @@ def _channel_group_id(channel_id):
     return group_id
 
 
-def _legacy_group_ids(settings):
-    """Group ids chosen across the old single-select `group_filter_N` dropdowns."""
+def _configured_group_ids(settings):
+    """Collect the group ids chosen across all `group_filter_N` dropdowns."""
     ids = set()
     for i in range(1, MAX_FILTER_SLOTS + 1):
         raw = settings.get(f"group_filter_{i}")
@@ -337,29 +194,6 @@ def _legacy_group_ids(settings):
             except (TypeError, ValueError):
                 pass
     return ids
-
-
-def _configured_group_ids(settings):
-    """Collect the configured group ids.
-
-    The multiselect value wins whenever it has been saved at all (even as an
-    empty list — that means "user cleared it"). Until then, fall back to the
-    legacy dropdown keys so an existing setup keeps working across a
-    Dispatcharr upgrade. Dispatcharr v0.34+ drops settings keys with no
-    matching field on the next save, so the legacy keys disappear on their
-    own once the multiselect is saved.
-    """
-    if GROUP_IDS_FIELD in settings:
-        raw = settings.get(GROUP_IDS_FIELD)
-        ids = set()
-        if isinstance(raw, (list, tuple)):
-            for v in raw:
-                try:
-                    ids.add(int(v))
-                except (TypeError, ValueError):
-                    pass
-        return ids
-    return _legacy_group_ids(settings)
 
 
 def _find_channel_id_in_caller():
@@ -387,10 +221,6 @@ def _find_channel_id_in_caller():
         frame = frame.f_back
     return None
 
-
-# ---------------------------------------------------------------------------
-# Patches
-# ---------------------------------------------------------------------------
 
 def _patched_stream_buffer_init(self, *args, **kwargs):
     # Always run Dispatcharr's real init first — everything downstream
@@ -430,7 +260,6 @@ def _patched_stream_buffer_init(self, *args, **kwargs):
             f"audio_buffer_tuner: channel {channel_id} (group {group_id}) "
             f"chunk size override -> {self.target_chunk_size} bytes (default {default_bytes})"
         )
-        _record_override("chunk_size_bytes", channel_id, group_id, self.target_chunk_size, default_bytes)
     except Exception:
         # Never let a bug in this plugin break stream buffering.
         logger.exception("audio_buffer_tuner: failed to apply chunk size override")
@@ -464,19 +293,16 @@ def _patched_initial_behind_chunks():
         # Always at least 1 chunk, never more than Dispatcharr's own default.
         chunks = max(1, min(chunks, default_chunks))
         with _log_dedup_lock:
-            first_time = _logged_prebuffer_override.get(channel_id) != chunks
-            if first_time:
+            if _logged_prebuffer_override.get(channel_id) != chunks:
                 _logged_prebuffer_override[channel_id] = chunks
+                logger.info(
+                    f"audio_buffer_tuner: channel {channel_id} (group {group_id}) "
+                    f"prebuffer override -> {chunks} chunks (default {default_chunks})"
+                )
                 # Cheap unbounded-growth guard for long-running deployments with
                 # lots of channel churn — this dict only exists for log dedup.
                 if len(_logged_prebuffer_override) > 500:
                     _logged_prebuffer_override.clear()
-        if first_time:
-            logger.info(
-                f"audio_buffer_tuner: channel {channel_id} (group {group_id}) "
-                f"prebuffer override -> {chunks} chunks (default {default_chunks})"
-            )
-            _record_override("prebuffer_chunks", channel_id, group_id, chunks, default_chunks)
         return chunks
     except Exception:
         # Never let a bug in this plugin break channel startup.
@@ -490,7 +316,6 @@ def _apply_patch():
     ConfigHelper.initial_behind_chunks = staticmethod(_patched_initial_behind_chunks)
     StreamBuffer.__init__ = _patched_stream_buffer_init
     setattr(ConfigHelper, _PATCH_FLAG, True)
-    _register_process(True)
     logger.info("audio_buffer_tuner: patched ConfigHelper.initial_behind_chunks and StreamBuffer.__init__")
 
 
@@ -500,59 +325,59 @@ def _remove_patch():
     ConfigHelper.initial_behind_chunks = staticmethod(_original_initial_behind_chunks)
     StreamBuffer.__init__ = _original_stream_buffer_init
     setattr(ConfigHelper, _PATCH_FLAG, False)
-    _register_process(False)
     logger.info("audio_buffer_tuner: restored original ConfigHelper.initial_behind_chunks and StreamBuffer.__init__")
-
-
-# ---------------------------------------------------------------------------
-# Plugin
-# ---------------------------------------------------------------------------
-
-_DIAGNOSE_ACTION = {
-    "id": "diagnose",
-    "label": "Show current status",
-    "description": (
-        "Reports which Dispatcharr processes have the override installed, "
-        "current settings, the groups it applies to, and the most recent "
-        "overrides actually applied to a channel."
-    ),
-}
-
-_REFRESH_ACTION = {
-    "id": "refresh_groups",
-    "label": "Refresh group filters",
-    "description": (
-        "Rebuilds the group-picker dropdowns below: picks up newly "
-        "added/renamed Channel Groups, AND applies any change to \"Number "
-        "of group filters\". Run this after saving either kind of change, "
-        "then reload the Dispatcharr page."
-    ),
-}
 
 
 class Plugin:
     # name/version/description/author intentionally omitted — Dispatcharr
-    # falls back to plugin.json's values for any of these left unset here,
-    # so plugin.json is the single source of truth for this metadata.
+    # falls back to plugin.json's values for any of these left unset here
+    # (apps/plugins/loader.py reads each via getattr(instance, attr, default)
+    # and only overrides from the manifest when the class-level value is
+    # falsy), so plugin.json is the single source of truth for this
+    # metadata instead of keeping two copies in sync.
 
     def __init__(self):
-        self.v3_ui = _supports_v3_fields()
         self.fields = self._build_fields()
-        # On v3 builds the plugin page has its own "Reload Plugin" button,
-        # which re-runs this __init__ (fresh group list) AND refetches the
-        # field list in the browser — strictly better than our own refresh
-        # action, which also needed a manual page reload.
-        self.actions = [_DIAGNOSE_ACTION] if self.v3_ui else [_REFRESH_ACTION, _DIAGNOSE_ACTION]
+        self.actions = [
+            {
+                "id": "refresh_groups",
+                "label": "Refresh group filters",
+                "description": (
+                    "Rebuilds the group-picker dropdowns below: picks up "
+                    "newly added/renamed Channel Groups, AND applies any "
+                    "change to \"Number of group filters\" (growing or "
+                    "shrinking the dropdown count). Run this after saving "
+                    "either kind of change, then reload the Dispatcharr "
+                    "page — the settings panel only loads field "
+                    "definitions once per page load."
+                ),
+            },
+            {
+                "id": "diagnose",
+                "label": "Show current status",
+                "description": (
+                    "Reports whether the override is actually active in "
+                    "this process, current settings, and which Channel "
+                    "Groups exist — use this instead of digging through logs."
+                ),
+            },
+        ]
         # Only reached when this plugin is enabled (Dispatcharr doesn't
         # instantiate disabled plugins), so it's safe to patch unconditionally.
         _apply_patch()
 
-    # -- fields -------------------------------------------------------------
-
-    def _buffer_fields(self, section=None):
+    def _build_fields(self):
         default_max = TSConfig.INITIAL_BEHIND_CHUNKS
         default_chunk_size_kb = TSConfig.BUFFER_CHUNK_SIZE // 1024
         default_prebuffer_kb = default_max * default_chunk_size_kb
+
+        state = _get_plugin_state(force_refresh=True)
+        try:
+            slot_count = int(state["settings"].get("filter_slot_count", DEFAULT_FILTER_SLOTS))
+        except (TypeError, ValueError):
+            slot_count = DEFAULT_FILTER_SLOTS
+        slot_count = max(MIN_FILTER_SLOTS, min(slot_count, MAX_FILTER_SLOTS))
+
         fields = [
             {
                 "id": "prebuffer_chunks",
@@ -592,86 +417,6 @@ class Plugin:
                     f"size until they restart."
                 ),
             },
-        ]
-        if section:
-            for f in fields:
-                f["section"] = section
-        return fields
-
-    def _load_groups(self):
-        try:
-            return list(_channels_with_real_channels_qs().values("id", "name"))
-        except Exception:
-            logger.debug("audio_buffer_tuner: could not load channel groups yet", exc_info=True)
-            return []
-
-    def _build_fields(self):
-        return self._build_fields_v3() if self.v3_ui else self._build_fields_legacy()
-
-    def _build_fields_v3(self):
-        state = _get_plugin_state(force_refresh=True)
-        settings = state["settings"]
-        groups = self._load_groups()
-        option_values = {str(g["id"]) for g in groups}
-
-        # Pre-select whatever the old dropdowns had chosen, so the first save
-        # after upgrading carries the selection over. Only ids that are still
-        # valid options — Dispatcharr rejects a save containing an unknown
-        # multiselect value.
-        legacy_default = sorted(
-            (str(i) for i in _legacy_group_ids(settings) if str(i) in option_values),
-            key=int,
-        )
-
-        fields = [
-            {"id": "sec_groups", "label": "Channel groups", "type": "section"},
-        ]
-        if groups:
-            fields.append(
-                {
-                    "id": GROUP_IDS_FIELD,
-                    "label": "Apply to these Channel Groups",
-                    "type": "multiselect",
-                    "section": "sec_groups",
-                    "default": legacy_default,
-                    "placeholder": "Pick one or more groups",
-                    "options": [{"value": str(g["id"]), "label": g["name"]} for g in groups],
-                    "help_text": (
-                        "Only groups that actually contain channels are "
-                        "listed — groups that exist solely because a Stream "
-                        "points at them are left out. Added a group since "
-                        "enabling this plugin? Use Reload Plugin at the top "
-                        "of this page to refresh the list."
-                    ),
-                }
-            )
-        else:
-            fields.append(
-                {
-                    "id": "info_no_groups",
-                    "type": "info",
-                    "section": "sec_groups",
-                    "label": (
-                        "No Channel Groups with actual channels found yet. "
-                        "Once your channels exist, use Reload Plugin at the "
-                        "top of this page to populate the group picker."
-                    ),
-                }
-            )
-        fields.append({"id": "sec_buffer", "label": "Buffer settings", "type": "section"})
-        fields.extend(self._buffer_fields(section="sec_buffer"))
-        return fields
-
-    def _build_fields_legacy(self):
-        state = _get_plugin_state(force_refresh=True)
-        try:
-            slot_count = int(state["settings"].get("filter_slot_count", DEFAULT_FILTER_SLOTS))
-        except (TypeError, ValueError):
-            slot_count = DEFAULT_FILTER_SLOTS
-        slot_count = max(MIN_FILTER_SLOTS, min(slot_count, MAX_FILTER_SLOTS))
-
-        fields = self._buffer_fields()
-        fields.append(
             {
                 "id": "filter_slot_count",
                 "label": "Number of group filters",
@@ -687,10 +432,15 @@ class Plugin:
                     "Dispatcharr page — saving alone does not regenerate "
                     "the dropdowns."
                 ),
-            }
-        )
+            },
+        ]
 
-        groups = self._load_groups()
+        try:
+            groups = list(_channels_with_real_channels_qs().values("id", "name"))
+        except Exception:
+            logger.debug("audio_buffer_tuner: could not load channel groups yet", exc_info=True)
+            groups = []
+
         if groups:
             options = [{"value": NONE_OPTION_VALUE, "label": "— none —"}] + [
                 {"value": str(g["id"]), "label": g["name"]} for g in groups
@@ -722,17 +472,23 @@ class Plugin:
                     ),
                 }
             )
+
         return fields
 
-    # -- actions ------------------------------------------------------------
-
     def run(self, action_id, params, context):
-        if action_id == "refresh_groups" and not self.v3_ui:
+        if action_id == "refresh_groups":
             self.fields = self._build_fields()
             try:
-                # self.fields alone is cosmetic: the plugin list serves a
-                # registry snapshot frozen at the last (re)load. Forcing a
-                # re-discovery regenerates it.
+                # self.fields alone is cosmetic: Dispatcharr's plugin list
+                # (PluginsListAPIView -> list_plugins()) serves lp.fields —
+                # a snapshot frozen in the registry the last time this
+                # plugin was actually (re)loaded — never re-synced from a
+                # live instance attribute afterward. A plain page reload
+                # only re-fetches that frozen snapshot, so updating
+                # self.fields here changes nothing visible on its own.
+                # Forcing a real re-discovery is what actually regenerates
+                # the registry's copy — the same thing a manual disable/
+                # enable does, without requiring you to do that by hand.
                 from apps.plugins.loader import PluginManager
                 PluginManager.get().discover_plugins(force_reload=True)
                 message = "Group filters rebuilt — reload the Dispatcharr page to see them."
@@ -743,82 +499,39 @@ class Plugin:
                     "toggle the plugin off and back on to pick up the change."
                 )
             return {"status": "ok", "message": message}
-        if action_id == "refresh_groups":
-            return {
-                "status": "ok",
-                "message": "Use the Reload Plugin button at the top of this page to refresh the group list.",
-            }
         if action_id == "diagnose":
-            # "file" is rendered persistently as "Output: ..." under the
-            # action row; "message" is the transient toast.
-            return {"status": "ok", "message": "Status report shown below the action.", "file": self._diagnostic_report()}
+            return {"status": "ok", "file": self._diagnostic_report()}
         return {"status": "ok"}
 
     def _diagnostic_report(self):
+        patched = getattr(ConfigHelper, _PATCH_FLAG, False)
         state = _get_plugin_state(force_refresh=True)
         settings = state["settings"]
         configured_ids = sorted(_configured_group_ids(settings))
-        source = (
-            "multiselect" if GROUP_IDS_FIELD in settings
-            else ("legacy dropdowns" if _legacy_group_ids(settings) else "none")
-        )
 
-        try:
-            names = dict(_channels_with_real_channels_qs().values_list("id", "name"))
-        except Exception:
-            names = {}
+        configured_group_filters = ", ".join(
+            f"{i}={settings.get(f'group_filter_{i}', '(unset)')}"
+            for i in range(1, MAX_FILTER_SLOTS + 1)
+            if settings.get(f"group_filter_{i}")
+        ) or "(none set)"
 
         lines = [
-            f"Plugin key: {_plugin_key()}",
-            f"Settings UI: {'v3 (multiselect)' if self.v3_ui else 'legacy dropdowns'}",
-            f"Enabled (per DB): {state['enabled']}",
-            f"prebuffer_chunks: {settings.get('prebuffer_chunks', f'(default {DEFAULT_PREBUFFER_CHUNKS})')}",
-            f"chunk_size_kb: {settings.get('chunk_size_kb', f'(default {DEFAULT_CHUNK_KB})')}",
-            "Applies to groups ("
-            + source
-            + "): "
-            + (", ".join(f"{gid}:{names.get(gid, '?')}" for gid in configured_ids) or "(none — override never fires)"),
+            f"Patch installed in THIS process: {patched}",
+            f"Plugin enabled (per DB): {state['enabled']}",
+            f"filter_slot_count setting: {settings.get('filter_slot_count', '(default)')}",
+            f"prebuffer_chunks setting: {settings.get('prebuffer_chunks', '(default)')}",
+            f"chunk_size_kb setting: {settings.get('chunk_size_kb', '(default)')}",
+            f"Configured group_filter_N values: {configured_group_filters}",
+            f"Group ids this would apply to: {configured_ids or '(none — override never fires)'}",
         ]
-
-        r = _redis()
-        if r is None:
-            lines.append("Redis unavailable — can't report cross-process status")
-        else:
-            try:
-                procs = r.hgetall(_REDIS_PROCS_KEY) or {}
-                proc_desc = []
-                for pid, raw in procs.items():
-                    pid = pid.decode() if isinstance(pid, bytes) else pid
-                    try:
-                        info = json.loads(raw)
-                        proc_desc.append(f"{pid} ({info.get('role', '?')})")
-                    except Exception:
-                        proc_desc.append(pid)
-                lines.append(
-                    "Processes with patch installed: "
-                    + (", ".join(sorted(proc_desc)) or "(none registered)")
-                )
-            except Exception as e:
-                lines.append(f"Process registry read failed: {e!r}")
-            try:
-                events = r.lrange(_REDIS_EVENTS_KEY, 0, 4) or []
-                ev_desc = []
-                for raw in events:
-                    try:
-                        ev = json.loads(raw)
-                        age = int(time.time()) - int(ev.get("ts", 0))
-                        ev_desc.append(
-                            f"{ev.get('kind')}={ev.get('value')} (default {ev.get('default')}) "
-                            f"ch {str(ev.get('channel'))[:8]}… grp {ev.get('group')} {age}s ago"
-                        )
-                    except Exception:
-                        continue
-                lines.append(
-                    "Recent overrides: " + ("; ".join(ev_desc) or "(none yet — start a matching channel)")
-                )
-            except Exception as e:
-                lines.append(f"Override log read failed: {e!r}")
-
+        try:
+            groups = list(_channels_with_real_channels_qs().values("id", "name"))
+            lines.append(
+                "Eligible Channel Groups (id: name): "
+                + (", ".join(f"{g['id']}:{g['name']}" for g in groups) or "(none found)")
+            )
+        except Exception as e:
+            lines.append(f"Channel Group query failed: {e!r}")
         return " | ".join(lines)
 
     def stop(self, context):
