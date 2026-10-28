@@ -35,10 +35,11 @@ straight back to Dispatcharr's normal behavior.
 Settings UI — two modes, picked at runtime:
   - Dispatcharr builds whose plugin field serializer knows `multiselect`
     (the "v3" plugin system, v0.34+ / current dev): one multiselect group
-    picker, grouped into collapsible sections. Use the plugin page's own
-    "Reload Plugin" button to pick up newly added Channel Groups.
+    picker, grouped into collapsible sections.
   - Older builds (v0.31–v0.33): the original N single-select "group
-    filter" dropdowns, with an adjustable count and a refresh action.
+    filter" dropdowns, with an adjustable count.
+  Either way the group options are rebuilt on demand (see "Live group-picker
+  refresh" below), so new Channel Groups show up without a plugin reload.
   Settings saved by the old dropdown mode are still honored in the new
   mode until the multiselect is saved for the first time (and they're
   pre-selected in it), so upgrading Dispatcharr doesn't silently drop
@@ -484,7 +485,97 @@ def _patched_initial_behind_chunks():
         return _original_initial_behind_chunks()
 
 
+# ---------------------------------------------------------------------------
+# Live group-picker refresh
+#
+# Dispatcharr copies a plugin's `fields` into its registry once, when the
+# plugin loads, and serves that frozen copy from then on. So a Channel Group
+# created after the plugin loaded never showed up in the picker until the
+# plugin was reloaded (or disabled/re-enabled).
+#
+# Fix: wrap PluginManager.list_plugins (what the plugin pages fetch) and
+# PluginManager.update_settings (what validates a save against the
+# multiselect's options). Before either runs, rebuild this plugin's field
+# list in the registry if the set of eligible groups (or anything else the
+# fields depend on) changed. It runs in whichever web worker serves the
+# request, so every worker stays current without the global reload token,
+# which would force every plugin in every process to reload. The result is
+# throttled, so a page load costs at most one small query every few seconds.
+# ---------------------------------------------------------------------------
+
+_FIELDS_REFRESH_TTL = 5  # seconds
+_fields_refresh_lock = threading.Lock()
+_fields_refresh_state = {"ts": 0.0}
+_PM_ORIG_ATTR = "_audio_buffer_tuner_originals"
+
+
+def _refresh_registry_fields(pm):
+    try:
+        now = time.time()
+        with _fields_refresh_lock:
+            if now - _fields_refresh_state["ts"] < _FIELDS_REFRESH_TTL:
+                return
+            _fields_refresh_state["ts"] = now
+        lp = getattr(pm, "_registry", {}).get(_plugin_key())
+        instance = getattr(lp, "instance", None) if lp else None
+        if instance is None or not hasattr(instance, "_build_fields"):
+            return
+        new_fields = instance._build_fields()
+        normalize = getattr(pm, "_normalize_fields", None)
+        if callable(normalize):
+            new_fields = normalize(new_fields)
+        if json.dumps(new_fields, sort_keys=True, default=str) != json.dumps(
+            lp.fields or [], sort_keys=True, default=str
+        ):
+            instance.fields = new_fields
+            lp.fields = new_fields
+            logger.info("audio_buffer_tuner: channel group picker refreshed")
+    except Exception:
+        # Never break the plugin pages over a cosmetic refresh.
+        logger.debug("audio_buffer_tuner: live field refresh failed", exc_info=True)
+
+
+def _patch_plugin_manager():
+    try:
+        from apps.plugins.loader import PluginManager
+    except Exception:
+        return
+    if getattr(PluginManager, _PM_ORIG_ATTR, None):
+        return  # already wrapped (possibly by a previous load of this module)
+    originals = {}
+    for name in ("list_plugins", "update_settings"):
+        orig = getattr(PluginManager, name, None)
+        if not callable(orig):
+            continue
+        originals[name] = orig
+
+        def make_wrapper(orig):
+            def wrapper(self, *args, **kwargs):
+                _refresh_registry_fields(self)
+                return orig(self, *args, **kwargs)
+            wrapper.__name__ = orig.__name__
+            wrapper.__doc__ = orig.__doc__
+            return wrapper
+
+        setattr(PluginManager, name, make_wrapper(orig))
+    setattr(PluginManager, _PM_ORIG_ATTR, originals)
+
+
+def _unpatch_plugin_manager():
+    try:
+        from apps.plugins.loader import PluginManager
+    except Exception:
+        return
+    originals = getattr(PluginManager, _PM_ORIG_ATTR, None)
+    if not originals:
+        return
+    for name, orig in originals.items():
+        setattr(PluginManager, name, orig)
+    setattr(PluginManager, _PM_ORIG_ATTR, None)
+
+
 def _apply_patch():
+    _patch_plugin_manager()
     if getattr(ConfigHelper, _PATCH_FLAG, False):
         return
     ConfigHelper.initial_behind_chunks = staticmethod(_patched_initial_behind_chunks)
@@ -495,6 +586,7 @@ def _apply_patch():
 
 
 def _remove_patch():
+    _unpatch_plugin_manager()
     if not getattr(ConfigHelper, _PATCH_FLAG, False):
         return
     ConfigHelper.initial_behind_chunks = staticmethod(_original_initial_behind_chunks)
@@ -639,9 +731,8 @@ class Plugin:
                     "help_text": (
                         "Only groups that actually contain channels are "
                         "listed — groups that exist solely because a Stream "
-                        "points at them are left out. Added a group since "
-                        "enabling this plugin? Use Reload Plugin at the top "
-                        "of this page to refresh the list."
+                        "points at them are left out. Newly added groups "
+                        "appear the next time this page loads."
                     ),
                 }
             )
@@ -653,8 +744,8 @@ class Plugin:
                     "section": "sec_groups",
                     "label": (
                         "No Channel Groups with actual channels found yet. "
-                        "Once your channels exist, use Reload Plugin at the "
-                        "top of this page to populate the group picker."
+                        "Once your channels exist, reopen this page and the "
+                        "group picker will appear."
                     ),
                 }
             )
@@ -682,10 +773,8 @@ class Plugin:
                 "default": DEFAULT_FILTER_SLOTS,
                 "help_text": (
                     "How many group-picker dropdowns to show below. After "
-                    "changing this, save, run the \"Refresh group "
-                    "filters\" action (Actions tab), then reload the "
-                    "Dispatcharr page — saving alone does not regenerate "
-                    "the dropdowns."
+                    "changing this, save, then reload the Dispatcharr page "
+                    "to see the new number of dropdowns."
                 ),
             }
         )
@@ -717,8 +806,8 @@ class Plugin:
                     "type": "info",
                     "label": (
                         "No Channel Groups with actual channels found yet. "
-                        "Save this plugin, then use \"Refresh group "
-                        "filters\" (and reload the page) once your channels exist."
+                        "Once your channels exist, reload the Dispatcharr "
+                        "page and the dropdowns will appear."
                     ),
                 }
             )

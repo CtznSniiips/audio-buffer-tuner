@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.0-beta2] - 2026-10-28
+### Changed
+- New Channel Groups now show up in the group picker automatically the next time the plugin page loads, on every supported Dispatcharr version. Before, Dispatcharr kept serving the group list from when the plugin loaded, so a new group only appeared after a plugin reload or a disable/re-enable. On v0.34+ the "Refresh group filters" action is removed because it's no longer needed.
+
 ## [0.4.0-beta] - 2026-10-28
 ### Added
 - **Multiselect group picker** on Dispatcharr builds with the new plugin settings system (v0.34 / current dev). One "Apply to these Channel Groups" field replaces the N single-select dropdowns, and the "Number of group filters" setting goes away. Settings are now split into collapsible "Channel groups" and "Buffer settings" sections.
@@ -8,7 +12,7 @@
 - "Show current status" now reports from Redis: which Dispatcharr processes have the patch installed, and the last few overrides actually applied to a channel.
 
 ### Changed
-- On v0.34+, the "Refresh group filters" action is gone. The plugin page's built-in **Reload Plugin** button rebuilds the group list and refreshes the page in one step.
+- New Channel Groups now show up in the group picker automatically the next time the plugin page loads, on every supported Dispatcharr version. Before, Dispatcharr kept serving the group list from when the plugin loaded, so a new group only appeared after a plugin reload or a disable/re-enable. On v0.34+ the "Refresh group filters" action is removed because it's no longer needed.
 - Upgrading keeps existing group selections. Groups picked in the old dropdowns stay active, and they're pre-selected in the multiselect, until you first save it.
 
 ### Fixed
