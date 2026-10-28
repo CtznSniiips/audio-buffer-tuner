@@ -1,10 +1,6 @@
 # Changelog
 
-## [0.4.0-beta2] - 2026-10-28
-### Changed
-- New Channel Groups now show up in the group picker automatically the next time the plugin page loads, on every supported Dispatcharr version. Before, Dispatcharr kept serving the group list from when the plugin loaded, so a new group only appeared after a plugin reload or a disable/re-enable. On v0.34+ the "Refresh group filters" action is removed because it's no longer needed.
-
-## [0.4.0-beta] - 2026-10-28
+## [0.3.5-beta.1] - 2026-10-28
 ### Added
 - **Multiselect group picker** on Dispatcharr builds with the new plugin settings system (v0.34 / current dev). One "Apply to these Channel Groups" field replaces the N single-select dropdowns, and the "Number of group filters" setting goes away. Settings are now split into collapsible "Channel groups" and "Buffer settings" sections.
 - Detected at runtime: on v0.31–v0.33 the plugin keeps the original dropdown UI, so one release works on both.
@@ -14,6 +10,8 @@
 ### Changed
 - New Channel Groups now show up in the group picker automatically the next time the plugin page loads, on every supported Dispatcharr version. Before, Dispatcharr kept serving the group list from when the plugin loaded, so a new group only appeared after a plugin reload or a disable/re-enable. On v0.34+ the "Refresh group filters" action is removed because it's no longer needed.
 - Upgrading keeps existing group selections. Groups picked in the old dropdowns stay active, and they're pre-selected in the multiselect, until you first save it.
+### Changed
+- New Channel Groups now show up in the group picker automatically the next time the plugin page loads, on every supported Dispatcharr version. Before, Dispatcharr kept serving the group list from when the plugin loaded, so a new group only appeared after a plugin reload or a disable/re-enable. On v0.34+ the "Refresh group filters" action is removed because it's no longer needed.
 
 ### Fixed
 - The plugin key is no longer hardcoded. Dispatcharr's dev branch now keeps hyphens in marketplace install keys (`audio-buffer-tuner`), so the hardcoded `audio_buffer_tuner` lookup failed on fresh installs and the override silently never applied. The key now comes from the install folder, with both spellings as fallbacks.
