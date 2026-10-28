@@ -95,9 +95,12 @@ jobs:
           # "src/" folder. Dispatcharr's installer (_install_plugin_from_zip)
           # walks the archive for the shallowest plugin.py; if it's found at
           # the root, the plugin's key is derived from THIS ZIP'S FILENAME
-          # (sanitized: spaces/hyphens -> underscores), not a folder name.
-          # A "src/" wrapper folder would make the key become "src" instead
-          # of "audio_buffer_tuner" — so this has to stay flat.
+          # (or the marketplace slug), not a folder name. Sanitizing turns
+          # spaces into underscores; hyphens become underscores on
+          # Dispatcharr <= v0.33 ("audio_buffer_tuner") but are KEPT on
+          # v0.34+/dev ("audio-buffer-tuner"). plugin.py resolves its key at
+          # runtime, so either form works. A "src/" wrapper folder would
+          # make the key become "src" instead, so this has to stay flat.
           (cd "$SRC_DIR" && zip -r "../$zip_name" . -q)
           echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
           echo "sha256=$(sha256sum "$zip_name" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
@@ -112,6 +115,9 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
           files: ${{ steps.build.outputs.zip_name }}
+          # Tags with a pre-release suffix (e.g. v0.4.0-beta.1) publish as a
+          # GitHub pre-release, so they never become the "Latest" release.
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
           body: |
             ${{ steps.changelog.outputs.body }}
 
