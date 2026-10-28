@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.4.0] - 2026-10-28
+## [0.4.0-beta] - 2026-10-28
 ### Added
 - **Multiselect group picker** on Dispatcharr builds with the new plugin settings system (v0.34 / current dev). One "Apply to these Channel Groups" field replaces the N single-select dropdowns, and the "Number of group filters" setting goes away. Settings are now split into collapsible "Channel groups" and "Buffer settings" sections.
 - Detected at runtime: on v0.31–v0.33 the plugin keeps the original dropdown UI, so one release works on both.
