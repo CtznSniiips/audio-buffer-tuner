@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0] - 2026-10-28
+### Added
+- **Multiselect group picker** on Dispatcharr builds with the new plugin settings system (v0.34 / current dev). One "Apply to these Channel Groups" field replaces the N single-select dropdowns, and the "Number of group filters" setting goes away. Settings are now split into collapsible "Channel groups" and "Buffer settings" sections.
+- Detected at runtime: on v0.31–v0.33 the plugin keeps the original dropdown UI, so one release works on both.
+- `manifest_version: 1` with the `proxy_internals` capability declared, so Dispatcharr's enable prompt says what the plugin touches. Builds before v0.34 ignore these keys.
+- "Show current status" now reports from Redis: which Dispatcharr processes have the patch installed, and the last few overrides actually applied to a channel.
+
+### Changed
+- On v0.34+, the "Refresh group filters" action is gone. The plugin page's built-in **Reload Plugin** button rebuilds the group list and refreshes the page in one step.
+- Upgrading keeps existing group selections. Groups picked in the old dropdowns stay active, and they're pre-selected in the multiselect, until you first save it.
+
+### Fixed
+- The plugin key is no longer hardcoded. Dispatcharr's dev branch now keeps hyphens in marketplace install keys (`audio-buffer-tuner`), so the hardcoded `audio_buffer_tuner` lookup failed on fresh installs and the override silently never applied. The key now comes from the install folder, with both spellings as fallbacks.
+- "Show current status" was misleading on v0.34+. Plugin actions now run on a Celery worker, so "patch installed in THIS process" was reporting the worker, not the uWSGI process that serves streams.
+
 ## [0.3.5] - 2026-09-16
 ### Fixed
 - "Refresh group filters" action now actually forces Dispatcharr to reload the plugin (`discover_plugins(force_reload=True)`), instead of only updating an instance attribute the settings panel never read. Previously the action appeared to do something but had no real effect on its own.
