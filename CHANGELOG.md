@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.4.2] - 2026-11-17
+### Fixed
+- **Group picker missing on Dispatcharr v0.34.0.** The live group-list refresh re-normalized the plugin's fields without the plugin's manifest version, and v0.34.0 drops `multiselect` and `section` fields at manifest version 0. After the first plugin-page load, the "Apply to these Channel Groups" picker and the section headers were stripped, leaving only the two number fields. The refresh now passes the manifest version through.
+
 ## [0.4.1] - 2026-11-17
 ### Added
 - **Multiselect group picker** on Dispatcharr builds with the new plugin settings system (v0.34 / current dev). One "Apply to these Channel Groups" field replaces the N single-select dropdowns, and the "Number of group filters" setting goes away. Settings are now split into collapsible "Channel groups" and "Buffer settings" sections.

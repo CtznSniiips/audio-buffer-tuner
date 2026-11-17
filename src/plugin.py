@@ -523,7 +523,16 @@ def _refresh_registry_fields(pm):
         new_fields = instance._build_fields()
         normalize = getattr(pm, "_normalize_fields", None)
         if callable(normalize):
-            new_fields = normalize(new_fields)
+            # v0.34+ gates field types by manifest version: `multiselect` and
+            # `section` are dropped unless the plugin's own manifest_version
+            # is passed through. Normalizing with the default (0) silently
+            # strips the group picker and section headers from the registry.
+            mv = getattr(lp, "manifest_schema_version", 0) or 0
+            try:
+                new_fields = normalize(new_fields, mv)
+            except TypeError:
+                # Builds whose _normalize_fields takes no version argument.
+                new_fields = normalize(new_fields)
         if json.dumps(new_fields, sort_keys=True, default=str) != json.dumps(
             lp.fields or [], sort_keys=True, default=str
         ):
